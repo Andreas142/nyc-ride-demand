@@ -1,0 +1,10 @@
+# Run dbt from the repository root (see Makefile) so relative paths resolve there.
+nyc_ride_demand:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: data/warehouse.duckdb
+      threads: 2
+      settings:
+        memory_limit: 4GB

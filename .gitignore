@@ -1,0 +1,28 @@
+# data never goes into git: it is re-downloadable from the sources in docs/data_sources.md
+data/
+*.duckdb
+*.duckdb.wal
+
+# python
+__pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# dbt
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+logs/
+
+# ml artefacts
+mlruns/
+mlartifacts/
+
+# editors
+.DS_Store
+.idea/
+
+# dbt writes an anonymous user id here
+dbt/.user.yml

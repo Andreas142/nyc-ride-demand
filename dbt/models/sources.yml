@@ -1,0 +1,23 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: Slim, standardised files written by `nycdemand ingest-*` (one schema for every service).
+    meta:
+      external_location: "read_parquet('data/bronze/{name}/*.parquet', union_by_name = true)"
+    tables:
+      - name: yellow
+        description: Metered yellow taxi trips.
+      - name: green
+        description: Green (boro) taxi trips.
+      - name: fhvhv
+        description: High-volume for-hire trips (Uber, Lyft).
+      - name: weather
+        description: Hourly Central Park weather in New York local time.
+
+  - name: reference
+    tables:
+      - name: zones
+        description: Official TLC taxi zone lookup.
+        meta:
+          external_location: "read_csv('data/bronze/zones/taxi_zone_lookup.csv', header = true)"

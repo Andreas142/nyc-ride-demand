@@ -1,0 +1,29 @@
+version: 2
+
+models:
+  - name: stg_trips
+    description: Trips from every ingested service on one schema, filtered for obvious errors.
+    columns:
+      - name: service
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["yellow", "green", "fhvhv"]
+      - name: pickup_at
+        tests: [not_null]
+      - name: pickup_hour
+        tests: [not_null]
+      - name: cbd_congestion_fee
+        description: Congestion Relief Zone charge; 0 before 5 Jan 2025.
+        tests: [not_null]
+
+  - name: stg_zones
+    columns:
+      - name: zone_id
+        tests: [unique, not_null]
+
+  - name: stg_weather_hourly
+    columns:
+      - name: hour
+        tests: [unique, not_null]

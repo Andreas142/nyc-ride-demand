@@ -1,0 +1,20 @@
+{
+  "name": "nyc-ride-demand",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "hostRequirements": {
+    "cpus": 2,
+    "memory": "8gb",
+    "storage": "32gb"
+  },
+  "postCreateCommand": "pip install -e '.[dev,eda]'",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "charliermarsh.ruff",
+        "innoverio.vscode-dbt-power-user"
+      ]
+    }
+  }
+}

@@ -1,0 +1,34 @@
+version: 2
+
+models:
+  - name: dim_zones
+    description: TLC taxi zones with an inferred Congestion Relief Zone flag (rebuilt every run).
+    columns:
+      - name: zone_id
+        tests: [unique, not_null]
+      - name: in_congestion_zone
+        tests: [not_null]
+
+  - name: fct_zone_hour_demand
+    description: >
+      Trips per service, pickup zone and local hour on a complete grid (hours without trips
+      are 0). Built one month at a time; sums and counts re-aggregate exactly.
+    columns:
+      - name: trips
+        tests: [not_null]
+      - name: hour
+        tests: [not_null]
+      - name: sum_wait_seconds
+        description: Request-to-pickup seconds (Uber/Lyft only); divide by trips_with_wait.
+
+  - name: fct_od_day
+    description: Trips per service, pickup zone, drop-off zone and day. Built one month at a time.
+    columns:
+      - name: trips
+        tests: [not_null]
+
+  - name: mart_filter_audit
+    description: Rows in, rows lost to each validity rule and rows kept, per service and month.
+    columns:
+      - name: rows_in
+        tests: [not_null]

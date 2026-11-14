@@ -1,0 +1,26 @@
+name: nyc_ride_demand
+version: "0.1.0"
+config-version: 2
+profile: nyc_ride_demand
+
+model-paths: ["models"]
+test-paths: ["tests"]
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  # Must match the services ingested into bronze (configs/project.yaml).
+  services: ["yellow", "fhvhv"]
+  # Congestion pricing start (MTA Congestion Relief Zone).
+  cbd_fee_start: "2025-01-05"
+  # The month the incremental marts build, e.g. dbt build --vars '{month: "2025-03"}'.
+  # `nycdemand backfill` and `make dbt-build MONTH=2025-03` pass it for you.
+  month: null
+
+models:
+  nyc_ride_demand:
+    staging:
+      +materialized: view
+    intermediate:
+      +materialized: view
+    marts:
+      +materialized: table

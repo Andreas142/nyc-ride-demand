@@ -1,0 +1,27 @@
+# Project configuration. Paths are relative to the repository root.
+
+tlc:
+  base_url: https://d37ci6vzurychx.cloudfront.net/trip-data
+  zone_lookup_url: https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv
+  # yellow = metered taxis, fhvhv = high-volume for-hire (Uber, Lyft). green is also supported.
+  services: [yellow, fhvhv]
+  # From 12 months before congestion pricing (started 5 Jan 2025) onwards.
+  # TLC publishes monthly with a 1-3 month lag. Months that are not out yet are skipped and
+  # picked up by a later run, so end_month can sit in the future.
+  start_month: "2024-01"
+  end_month: "2027-12"
+
+weather:
+  ghcnh_station: USW00094728   # NY City Central Park (GHCN id), primary source
+  isd_station: "72505394728"   # same station, ISD id, fallback source
+  start_year: 2023             # 2023 is needed for the placebo year in the causal study
+  end_year: 2027               # future years are skipped; the current year is refreshed
+
+paths:
+  bronze: data/bronze
+  raw: data/raw
+  warehouse: data/warehouse.duckdb
+
+duckdb:
+  memory_limit: 4GB   # fits a 2-core / 8 GB Codespace
+  threads: 2
