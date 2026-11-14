@@ -2,6 +2,7 @@
 
 import shutil
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
 import duckdb
@@ -11,20 +12,23 @@ from nycdemand.ingest.tlc import Manifest, bronze_path, ingest_tlc, prune_month,
 from nycdemand.pipeline import backfill
 from tests.conftest import REPO_ROOT, write_parquet
 
+# A "today" for which March 2025 may still be unpublished.
+SPRING_2025 = date(2025, 4, 20)
+
 
 def _manifest(cfg) -> Manifest:
     return Manifest(cfg.bronze_dir / "_manifest.json")
 
 
 def test_prune_refuses_months_that_are_not_built(cfg, yellow_file):
-    ingest_tlc(cfg, services=["yellow"], months=["2024-12"])
+    ingest_tlc(cfg, services=["yellow"], months=["2024-12"], today=SPRING_2025)
     with pytest.raises(RuntimeError, match="not in the marts"):
         prune_month(cfg, _manifest(cfg), "yellow", "2024-12")
     assert bronze_path(cfg, "yellow", "2024-12").exists()
 
 
 def test_pruned_month_keeps_a_sample_and_is_not_downloaded_again(cfg, yellow_file):
-    ingest_tlc(cfg, services=["yellow"], months=["2024-12"])
+    ingest_tlc(cfg, services=["yellow"], months=["2024-12"], today=SPRING_2025)
     manifest = _manifest(cfg)
     manifest.update("yellow", "2024-12", built_at="2026-01-01T00:00:00+00:00")
 
@@ -36,7 +40,7 @@ def test_pruned_month_keeps_a_sample_and_is_not_downloaded_again(cfg, yellow_fil
 
     # The source file is gone from "TLC" too: a second ingest must skip, not fail or re-download.
     yellow_file.unlink()
-    again = ingest_tlc(cfg, services=["yellow"], months=["2024-12"])
+    again = ingest_tlc(cfg, services=["yellow"], months=["2024-12"], today=SPRING_2025)
     assert again[0].status == "skipped"
     assert prune_month(cfg, _manifest(cfg), "yellow", "2024-12") is False
 
@@ -55,7 +59,7 @@ def test_backfill_builds_in_order_prunes_older_months_and_resumes(cfg, tmp_path)
     built: list[str] = []
     months = ["2025-02", "2024-12", "2025-01", "2025-03"]  # out of order; March is unpublished
 
-    first = backfill(cfg, months, services=["yellow"], build=built.append)
+    first = backfill(cfg, months, services=["yellow"], build=built.append, today=SPRING_2025)
     assert built == ["2024-12", "2025-01", "2025-02"]
     assert [(s.month, s.status) for s in first] == [
         ("2024-12", "built"),
@@ -69,9 +73,23 @@ def test_backfill_builds_in_order_prunes_older_months_and_resumes(cfg, tmp_path)
     assert bronze_path(cfg, "yellow", "2025-02").exists()
     assert sample_path(cfg, "yellow", "2025-01").exists()
 
-    second = backfill(cfg, months, services=["yellow"], build=built.append)
+    second = backfill(cfg, months, services=["yellow"], build=built.append, today=SPRING_2025)
     assert len(built) == 3  # nothing is rebuilt
     assert {s.status for s in second} == {"already-built", "unavailable"}
+
+
+def test_backfill_stops_at_an_old_month_it_cannot_download(cfg, yellow_file):
+    built: list[str] = []
+    with pytest.raises(RuntimeError, match="rate-limiting"):
+        backfill(
+            cfg,
+            ["2024-12", "2025-01", "2025-02"],
+            services=["yellow"],
+            build=built.append,
+            today=date(2026, 11, 14),
+            retry_waits=(),
+        )
+    assert built == ["2024-12"]  # December is safe; nothing after the gap was built
 
 
 def test_failed_build_is_not_marked_built_or_pruned(cfg, yellow_file):
@@ -79,7 +97,7 @@ def test_failed_build_is_not_marked_built_or_pruned(cfg, yellow_file):
         raise RuntimeError("dbt failed")
 
     with pytest.raises(RuntimeError, match="dbt failed"):
-        backfill(cfg, ["2024-12"], services=["yellow"], build=boom)
+        backfill(cfg, ["2024-12"], services=["yellow"], build=boom, today=SPRING_2025)
     assert not _manifest(cfg).is_built("yellow", "2024-12")
     assert bronze_path(cfg, "yellow", "2024-12").exists()
 
@@ -136,7 +154,7 @@ def test_backfill_end_to_end_with_dbt(cfg, tmp_path, monkeypatch):
                 tmp_path / "source" / f"{service}_tripdata_{month}.parquet", _trips_sql(service, month)
             )
 
-    statuses = backfill(cfg, ["2024-12", "2025-01"])
+    statuses = backfill(cfg, ["2024-12", "2025-01"], today=SPRING_2025)
     assert [s.status for s in statuses] == ["built", "built"]
     assert not Path("data/bronze/fhvhv/fhvhv_2024-12.parquet").exists()  # pruned to a sample
 

@@ -34,7 +34,11 @@ def _parser() -> argparse.ArgumentParser:
     tlc.add_argument("--end", help="last month, YYYY-MM (default: config)")
     tlc.add_argument("--force", action="store_true", help="rebuild months already in bronze")
     tlc.add_argument("--keep-raw", action="store_true", help="keep downloaded raw files")
-    tlc.add_argument("--no-remote", action="store_true", help="always download, never stream")
+    tlc.add_argument(
+        "--remote",
+        action="store_true",
+        help="stream with DuckDB instead of downloading (many requests; TLC may block them)",
+    )
 
     weather = sub.add_parser("ingest-weather", help="ingest hourly Central Park weather")
     weather.add_argument("--start-year", type=int)
@@ -71,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
             months=months,
             force=args.force,
             keep_raw=args.keep_raw,
-            remote=not args.no_remote,
+            remote=args.remote,
         )
         counts: dict[str, int] = defaultdict(int)
         for r in results:

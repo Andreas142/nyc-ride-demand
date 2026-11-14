@@ -1,9 +1,14 @@
 """Ingest NYC TLC trip records into a slim, standardised bronze layer.
 
-Each monthly file is read once (remotely through DuckDB's httpfs when possible, otherwise
-downloaded to a temporary file), reduced to the columns this project uses, renamed to one
-schema shared by every service and year, and written to
-``data/bronze/<service>/<service>_<YYYY-MM>.parquet``.
+Each monthly file is downloaded once with a single request (retried with back-off when the
+server refuses it), reduced to the columns this project uses, renamed to one schema shared
+by every service and year, and written to ``data/bronze/<service>/<service>_<YYYY-MM>.parquet``.
+The download is deleted afterwards.
+
+TLC's file server answers 403 both for files that are not published yet and when it is
+refusing a client that sent too many requests. A month older than PUBLICATION_LAG_MONTHS
+cannot be unpublished, so a 403 for it is retried and then raised as an error, never
+skipped: a silent hole in the history would be worse than a stopped run.
 
 A manifest (``data/bronze/_manifest.json``) records row counts and sources, so re-runs skip
 months that are already done and every bronze file can be traced back to its source URL.
@@ -18,9 +23,10 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-from collections.abc import Iterable
+import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import duckdb
@@ -31,6 +37,26 @@ from nycdemand.config import Config
 log = logging.getLogger(__name__)
 
 SUPPORTED_SERVICES = ("yellow", "green", "fhvhv")
+
+# TLC publishes with a lag of 1-3 months; a month older than this must exist.
+PUBLICATION_LAG_MONTHS = 4
+# Waits before each retry of a refused or failed download, in seconds.
+RETRY_WAITS = (30, 90, 270)
+USER_AGENT = "nycdemand/0.1 (portfolio project; +https://github.com/Andreas142/nyc-ride-demand)"
+_RETRY_STATUSES = {403, 429, 500, 502, 503, 504}
+
+
+class NotAvailable(FileNotFoundError):
+    """The server says the file is not there (403/404), and retrying did not change that."""
+
+
+def is_recent(month: str, today: date | None = None, lag_months: int = PUBLICATION_LAG_MONTHS) -> bool:
+    """True when TLC may simply not have published ``month`` yet."""
+    today = today or date.today()
+    year, mon = (int(part) for part in month.split("-"))
+    age = (today.year - year) * 12 + (today.month - mon)
+    return age < lag_months
+
 
 # Bronze schema: output column -> (source column candidates, SQL type).
 # Matching is case-insensitive because TLC has changed capitalisation over the years
@@ -154,28 +180,51 @@ def write_month(
     return int(rows)
 
 
-def download(url: str, dest: Path, timeout: int = 120) -> Path:
-    """Stream a file to disk; raise FileNotFoundError when TLC has not published it yet.
+def download(
+    url: str,
+    dest: Path,
+    timeout: int = 120,
+    retry_waits: tuple[float, ...] = (),
+    sleep: Callable[[float], None] = time.sleep,
+) -> Path:
+    """Stream a file to disk with one request; retry after each wait in ``retry_waits``.
 
-    A plain filesystem path is copied instead, which allows an offline mirror of the data.
+    Raises NotAvailable when the server keeps answering 403/404. A plain filesystem path is
+    copied instead, which allows an offline mirror of the data (and the tests).
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not url.startswith(("http://", "https://")):
         source = Path(url)
         if not source.exists():
-            raise FileNotFoundError(f"Not available: {url}")
+            raise NotAvailable(f"Not available: {url}")
         shutil.copyfile(source, dest)
         return dest
-    with requests.get(url, stream=True, timeout=timeout) as resp:
-        if resp.status_code in (403, 404):
-            raise FileNotFoundError(f"Not available ({resp.status_code}): {url}")
-        resp.raise_for_status()
-        part = dest.with_name(dest.name + ".part")
-        with part.open("wb") as fh:
-            for chunk in resp.iter_content(chunk_size=1 << 20):
-                fh.write(chunk)
-        part.replace(dest)
-    return dest
+
+    attempts = len(retry_waits) + 1
+    for attempt in range(1, attempts + 1):
+        try:
+            with requests.get(url, stream=True, timeout=timeout, headers={"User-Agent": USER_AGENT}) as resp:
+                if resp.status_code in _RETRY_STATUSES and attempt < attempts:
+                    wait = retry_waits[attempt - 1]
+                    log.warning("HTTP %s for %s; retrying in %ss", resp.status_code, url, wait)
+                    sleep(wait)
+                    continue
+                if resp.status_code in (403, 404):
+                    raise NotAvailable(f"Not available ({resp.status_code}): {url}")
+                resp.raise_for_status()
+                part = dest.with_name(dest.name + ".part")
+                with part.open("wb") as fh:
+                    for chunk in resp.iter_content(chunk_size=1 << 20):
+                        fh.write(chunk)
+                part.replace(dest)
+                return dest
+        except (requests.ConnectionError, requests.Timeout) as exc:
+            if attempt == attempts:
+                raise
+            wait = retry_waits[attempt - 1]
+            log.warning("%s for %s; retrying in %ss", type(exc).__name__, url, wait)
+            sleep(wait)
+    raise AssertionError("unreachable")
 
 
 class Manifest:
@@ -231,9 +280,17 @@ def ingest_tlc(
     months: Iterable[str] | None = None,
     force: bool = False,
     keep_raw: bool = False,
-    remote: bool = True,
+    remote: bool = False,
+    today: date | None = None,
+    retry_waits: tuple[float, ...] = RETRY_WAITS,
 ) -> list[MonthResult]:
-    """Ingest the requested service-months into bronze. Unpublished months are skipped."""
+    """Ingest the requested service-months into bronze.
+
+    Recent months that TLC has not published yet are reported as "unavailable" and skipped.
+    An older month that cannot be downloaded raises RuntimeError instead (see module docs).
+    ``remote=True`` streams with DuckDB instead of downloading; it sends hundreds of range
+    requests per file, which TLC's server may answer by refusing every request for a while.
+    """
     services = tuple(services or cfg.services)
     months = list(months or cfg.months)
     unknown = set(services) - set(SUPPORTED_SERVICES)
@@ -251,10 +308,18 @@ def ingest_tlc(
                 results.append(MonthResult(service, month, "skipped"))
                 continue
             url = month_url(cfg.tlc_base_url, service, month)
+            recent = is_recent(month, today)
+            waits = () if recent else tuple(retry_waits)
             try:
-                rows, method = _ingest_one(con, cfg, service, month, url, out_path, keep_raw, remote)
-            except FileNotFoundError as exc:
-                log.warning("%s", exc)
+                rows, method = _ingest_one(con, cfg, service, month, url, out_path, keep_raw, remote, waits)
+            except NotAvailable as exc:
+                if not recent:
+                    raise RuntimeError(
+                        f"{service} {month} should be published but the server refused it ({exc}). "
+                        "This is most likely TLC rate-limiting this machine: wait 30-60 minutes and "
+                        "run the same command again. Months already done are skipped."
+                    ) from exc
+                log.info("%s %s not published yet; skipping", service, month)
                 results.append(MonthResult(service, month, "unavailable"))
                 continue
             manifest.record(
@@ -270,7 +335,7 @@ def ingest_tlc(
     return results
 
 
-def _ingest_one(con, cfg, service, month, url, out_path, keep_raw, remote) -> tuple[int, str]:
+def _ingest_one(con, cfg, service, month, url, out_path, keep_raw, remote, retry_waits):
     if remote:
         try:
             return write_month(con, service, month, url, out_path), "remote"
@@ -279,7 +344,7 @@ def _ingest_one(con, cfg, service, month, url, out_path, keep_raw, remote) -> tu
             log.info("remote read failed for %s %s (%s); downloading", service, month, reason)
     raw_path = cfg.raw_dir / service / f"{service}_tripdata_{month}.parquet"
     if not raw_path.exists():
-        download(url, raw_path)
+        download(url, raw_path, retry_waits=retry_waits)
     try:
         return write_month(con, service, month, raw_path, out_path), "download"
     finally:

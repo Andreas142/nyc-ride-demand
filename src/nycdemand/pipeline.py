@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from nycdemand.config import Config
@@ -55,6 +55,8 @@ def backfill(
     keep_whole: int = 1,
     rebuild: bool = False,
     build: Callable[[str], None] = dbt_build_month,
+    today: date | None = None,
+    retry_waits: tuple[float, ...] | None = None,
 ) -> list[MonthStatus]:
     """Ingest, build and (optionally) prune the given months, oldest first.
 
@@ -68,9 +70,10 @@ def backfill(
     statuses: list[MonthStatus] = []
 
     for month in sorted(months):
-        results = ingest_tlc(cfg, services=services, months=[month], force=rebuild)
+        extra = {} if retry_waits is None else {"retry_waits": retry_waits}
+        results = ingest_tlc(cfg, services=services, months=[month], force=rebuild, today=today, **extra)
         if any(r.status == "unavailable" for r in results):
-            log.warning("%s: not published for every service yet; skipping", month)
+            log.info("%s: not published for every service yet; skipping", month)
             statuses.append(MonthStatus(month, "unavailable"))
             continue
 
